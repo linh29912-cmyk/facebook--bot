@@ -17,12 +17,18 @@ function getRandomDelay(minSec, maxSec) {
 class FacebookCommentBot {
     constructor() {
         this.config = loadConfig();
-        this.fb = new FacebookAPI(this.config);
         this.ai = new AIAnswerGenerator(this.config);
         this.repliedHistory = this.loadHistory();
-        this.replyCountInCurrentHour = 0;
         this.currentHour = new Date().getHours();
         this.isRunning = false;
+
+        // Khởi tạo danh sách các Fanpage hoạt động (Hỗ trợ ĐA FANPAGE)
+        this.pages = (this.config.pages || []).map(p => ({
+            ...p,
+            fb: new FacebookAPI(p.id, p.token),
+            replyCountInCurrentHour: 0,
+            connected: false
+        }));
     }
 
     loadHistory() {
@@ -61,15 +67,15 @@ class FacebookCommentBot {
         }
     }
 
-    checkHourlyLimit() {
+    checkHourlyLimit(page) {
         const nowHour = new Date().getHours();
         if (nowHour !== this.currentHour) {
             this.currentHour = nowHour;
-            this.replyCountInCurrentHour = 0;
+            this.pages.forEach(p => p.replyCountInCurrentHour = 0);
         }
 
-        if (this.replyCountInCurrentHour >= this.config.maxRepliesPerHour) {
-            console.log(`[RATE LIMIT 🛡️] Đã đạt giới hạn an toàn ${this.config.maxRepliesPerHour} phản hồi/giờ. Tạm nghỉ tới giờ sau để bảo vệ Page...`);
+        if (page.replyCountInCurrentHour >= this.config.maxRepliesPerHour) {
+            console.log(`[RATE LIMIT 🛡️] Page "${page.name}" đạt giới hạn ${this.config.maxRepliesPerHour} phản hồi/giờ. Tạm nghỉ tới giờ sau...`);
             return false;
         }
         return true;
@@ -77,7 +83,7 @@ class FacebookCommentBot {
 
     async start() {
         console.log('=====================================================');
-        console.log('   🤖 FACEBOOK AI COMMENT BOT - ANTI-BAN PRO        ');
+        console.log('   🤖 FACEBOOK MULTI-PAGE AI COMMENT BOT - 24/7     ');
         console.log('=====================================================');
 
         // 1. Luôn bật HTTP Server trước để Cloud Container (Render/Railway) không bị thoát
@@ -87,8 +93,14 @@ class FacebookCommentBot {
                 res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
                 res.end(JSON.stringify({
                     status: "ONLINE",
-                    bot: "Facebook Comment AI Bot - Góc của mẹ",
-                    repliesThisHour: this.replyCountInCurrentHour,
+                    bot: "Facebook Multi-Page AI Comment Bot",
+                    totalPages: this.pages.length,
+                    pages: this.pages.map(p => ({
+                        id: p.id,
+                        name: p.name,
+                        status: p.connected ? "CONNECTED" : "WAITING_AUTH",
+                        repliesThisHour: p.replyCountInCurrentHour
+                    })),
                     uptimeSeconds: Math.floor(process.uptime()),
                     lastCheck: new Date().toISOString()
                 }));
@@ -100,28 +112,31 @@ class FacebookCommentBot {
             console.warn('[SERVER PORT WARN]', e.message);
         }
 
-        // 2. Kiểm tra kết nối Page
-        try {
-            const page = await this.fb.checkPage();
-            console.log(`[PAGE KẾT NỐI THÀNH CÔNG] 👉 ${page.name} (ID: ${page.id})`);
-        } catch (err) {
-            console.error(`[LỖI KẾT NỐI PAGE] ❌ ${err.message}`);
-            console.log('Bot sẽ tiếp tục chạy nền và thử kết nối lại theo chu kỳ...');
+        // 2. Kiểm tra kết nối từng Page
+        console.log(`[KHỞI TẠO DANH SÁCH ĐA FANPAGE] (${this.pages.length} Page):`);
+        for (const page of this.pages) {
+            try {
+                const fbPage = await page.fb.checkPage();
+                page.name = fbPage.name || page.name;
+                page.connected = true;
+                console.log(`  ✅ [Page: ${page.name}] (ID: ${page.id}) - Kết nối thành công!`);
+            } catch (err) {
+                console.error(`  ⚠️ [Page: ${page.name || page.id}] Lỗi kết nối: ${err.message}`);
+            }
         }
 
-        console.log(`[CẤU HÌNH ĐỘ TRỄ MÔ PHỎNG NGƯỜI THẬT]`);
+        console.log(`\n[CẤU HÌNH ĐỘ TRỄ MÔ PHỎNG NGƯỜI THẬT]`);
         console.log(`  - Độ trễ phản hồi ngẫu nhiên: ${this.config.delayMinSeconds}s - ${this.config.delayMaxSeconds}s`);
         console.log(`  - Giãn cách giữa các comment: ${this.config.spacingBetweenComments}s`);
-        console.log(`  - Chu kỳ quét bài viết: mỗi ${this.config.scanIntervalSeconds}s`);
+        console.log(`  - Chu kỳ quét: mỗi ${this.config.scanIntervalSeconds}s`);
         console.log(`  - Tự động ẩn số điện thoại: ${this.config.autoHidePhone ? 'BẬT ✅' : 'TẮT ❌'}`);
-        console.log(`  - Trí tuệ nhân tạo (AI): ${this.config.geminiApiKey ? 'Gemini AI ✅' : 'Rule-based đa dạng (Chống lặp) ⚡'}`);
         console.log('-----------------------------------------------------\n');
 
         this.isRunning = true;
 
         while (this.isRunning) {
             try {
-                await this.scanAndProcess();
+                await this.scanAndProcessAllPages();
             } catch (err) {
                 console.error(`[SCAN ERROR] ⚠️ ${err.message}`);
             }
@@ -131,60 +146,64 @@ class FacebookCommentBot {
         }
     }
 
-    async scanAndProcess() {
+    async scanAndProcessAllPages() {
         const timeNow = new Date().toLocaleTimeString('vi-VN');
-        console.log(`[${timeNow}] 🔍 Đang quét ${this.config.postLimit} bài viết mới nhất trên Page...`);
+        console.log(`[${timeNow}] 🔍 Bắt đầu chu kỳ quét ${this.pages.length} Fanpage...`);
 
-        if (!this.checkHourlyLimit()) return;
+        for (const page of this.pages) {
+            if (!this.checkHourlyLimit(page)) continue;
+            try {
+                await this.scanSinglePage(page);
+            } catch (err) {
+                console.error(`[PAGE SCAN ERROR] Page "${page.name}": ${err.message}`);
+            }
+        }
+    }
+
+    async scanSinglePage(page) {
+        console.log(`\n👉 Đang quét Page: [${page.name}] (ID: ${page.id})`);
 
         let posts = [];
         try {
-            posts = await this.fb.getPublishedPosts(this.config.postLimit);
+            posts = await page.fb.getPublishedPosts(this.config.postLimit);
         } catch (err) {
-            console.warn(`[POSTS] Không lấy được danh sách bài viết: ${err.message}`);
+            console.warn(`  ⚠️ [POSTS] Không lấy được bài viết của page "${page.name}": ${err.message}`);
             return;
         }
 
         if (posts.length === 0) {
-            console.log('  -> Không có bài viết nào trên Page.');
+            console.log('  -> Chưa có bài viết nào gần đây.');
             return;
         }
 
         for (const post of posts) {
-            console.log(`  📝 Kiểm tra bài viết: ${post.id.slice(-8)} | Nội dung: "${(post.message || '').slice(0, 40).replace(/\n/g, ' ')}..."`);
-            
             let comments = [];
             try {
-                comments = await this.fb.getPostComments(post.id);
+                comments = await page.fb.getPostComments(post.id);
             } catch (err) {
-                // Nếu gặp lỗi quyền pages_read_user_content thì báo rõ ràng
-                console.warn(`    ⚠️ Không thể đọc comment của bài: ${err.message}`);
+                console.warn(`    ⚠️ Không thể đọc comment của bài ${post.id}: ${err.message}`);
                 continue;
             }
 
             for (const comment of comments) {
                 // 1. Kiểm tra nếu comment do chính Page đăng -> Bỏ qua
-                if (comment.from?.id === this.config.pageId) {
-                    continue;
-                }
+                if (comment.from?.id === page.id) continue;
 
-                // 2. Kiểm tra nếu comment đã được xử lý trước đó trong file lịch sử -> Bỏ qua
-                if (this.repliedHistory.has(comment.id)) {
-                    continue;
-                }
+                // 2. Kiểm tra nếu comment đã được xử lý trước đó -> Bỏ qua
+                if (this.repliedHistory.has(comment.id)) continue;
 
-                // 3. Kiểm tra xem comment đã có phản hồi nào từ Page hay chưa (do người khác hoặc bot đã reply)
+                // 3. Kiểm tra xem comment đã có phản hồi nào từ Page hay chưa
                 const existingReplies = comment.comments?.data || [];
-                const alreadyRepliedByPage = existingReplies.some(rep => rep.from?.id === this.config.pageId);
+                const alreadyRepliedByPage = existingReplies.some(rep => rep.from?.id === page.id);
                 if (alreadyRepliedByPage) {
-                    this.saveHistory(comment.id, { note: 'Đã được trả lời thủ công trước đó' });
+                    this.saveHistory(comment.id, { page: page.name, note: 'Đã trả lời trước đó' });
                     continue;
                 }
 
                 // 4. Phát hiện comment mới cần trả lời!
-                await this.handleNewComment(comment, post);
+                await this.handleNewComment(comment, post, page);
 
-                // Giãn cách một khoảng an toàn trước khi xử lý comment tiếp theo
+                // Giãn cách an toàn giữa các comment
                 const spacing = getRandomDelay(this.config.spacingBetweenComments, this.config.spacingBetweenComments + 15);
                 console.log(`⏳ Giãn cách an toàn ${spacing}s trước comment tiếp theo...`);
                 await sleep(spacing * 1000);
@@ -192,11 +211,11 @@ class FacebookCommentBot {
         }
     }
 
-    async handleNewComment(comment, post) {
+    async handleNewComment(comment, post, page) {
         const customerName = comment.from?.name || 'Khách hàng';
         const commentText = comment.message || '';
         console.log(`\n-----------------------------------------------------`);
-        console.log(`💬 PHÁT HIỆN COMMENT MỚI TỪ: ${customerName}`);
+        console.log(`💬 [Page: ${page.name}] COMMENT MỚI TỪ: ${customerName}`);
         console.log(`   Nội dung: "${commentText}"`);
 
         // 1. Kiểm tra số điện thoại (chống cướp đơn)
@@ -204,49 +223,48 @@ class FacebookCommentBot {
         if (hasPhone && this.config.autoHidePhone) {
             try {
                 console.log(`   🚨 Phát hiện Số Điện Thoại! Đang tự động ẩn bình luận bảo mật...`);
-                await this.fb.hideComment(comment.id);
+                await page.fb.hideComment(comment.id);
                 console.log(`   🔒 Đã ẩn bình luận thành công!`);
             } catch (err) {
                 console.warn(`   ⚠️ Không thể ẩn bình luận: ${err.message}`);
             }
         }
 
-        // 2. Sinh câu trả lời bằng AI
-        console.log(`   🧠 AI đang suy nghĩ câu trả lời...`);
-        const replyText = await this.ai.generateResponse(commentText, customerName);
+        // 2. Sinh câu trả lời bằng AI theo phong cách của Page
+        console.log(`   🧠 AI đang suy nghĩ câu trả lời thôi miên...`);
+        const replyText = await this.ai.generateResponse(commentText, customerName, page);
         console.log(`   💡 Câu trả lời dự kiến: "${replyText}"`);
 
         // 3. MÔ PHỎNG ĐỘ TRỄ NGƯỜI THẬT (HUMAN-LIKE DELAY)
         const delaySeconds = getRandomDelay(this.config.delayMinSeconds, this.config.delayMaxSeconds);
-        console.log(`   ⏳ [MÔ PHỎNG NGƯỜI THẬT] Đang chờ ngẫu nhiên ${delaySeconds} giây trước khi gửi...`);
-        console.log(`      (Mô phỏng thời gian nhân viên đọc thông báo, suy nghĩ và gõ phím)`);
-
+        console.log(`   ⏳ [MÔ PHỎNG NGƯỜI THẬT] Đang chờ ngẫu nhiên ${delaySeconds}s trước khi gửi...`);
         await sleep(delaySeconds * 1000);
 
         // 4. Gửi bình luận trả lời lên Facebook
         try {
-            console.log(`   🚀 Đang gửi câu trả lời lên Facebook...`);
-            const res = await this.fb.replyComment(comment.id, replyText);
+            console.log(`   🚀 Đang gửi câu trả lời lên Facebook [${page.name}]...`);
+            const res = await page.fb.replyComment(comment.id, replyText);
             console.log(`   ✅ ĐÃ TRẢ LỜI THÀNH CÔNG! (Reply ID: ${res.id})`);
 
-            // 5. Nếu bật Private Reply -> gửi thêm tin nhắn riêng qua Messenger
+            // 5. Gửi tin nhắn riêng (Private Reply) nếu được bật
             if (this.config.enablePrivateReply) {
                 try {
-                    await sleep(3000); // nghỉ nhẹ 3s
-                    await this.fb.sendPrivateReply(comment.id, replyText);
+                    await sleep(3000);
+                    await page.fb.sendPrivateReply(comment.id, replyText);
                     console.log(`   📬 Đã gửi tin nhắn riêng qua Messenger cho khách!`);
                 } catch (privErr) {
                     console.log(`   ℹ️ Private reply: ${privErr.message}`);
                 }
             }
 
-            // Ghi nhận lịch sử và tăng biến đếm
+            // Ghi nhận lịch sử
             this.saveHistory(comment.id, {
+                page: page.name,
                 customer: customerName,
                 text: commentText,
                 reply: replyText
             });
-            this.replyCountInCurrentHour++;
+            page.replyCountInCurrentHour++;
         } catch (err) {
             console.error(`   ❌ LỖI KHI GỬI CÂU TRẢ LỜI: ${err.message}`);
         }

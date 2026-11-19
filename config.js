@@ -27,42 +27,63 @@ function loadEnv() {
         }
     }
 
+    // Nạp danh sách các Fanpage (Hỗ trợ ĐA FANPAGE)
+    let pages = [];
+    if (process.env.PAGES_CONFIG) {
+        try {
+            pages = JSON.parse(process.env.PAGES_CONFIG);
+        } catch (e) {
+            console.warn('[CONFIG] Không thể parse biến PAGES_CONFIG JSON:', e.message);
+        }
+    } else {
+        const pagesJsonPath = path.join(__dirname, 'pages.json');
+        if (fs.existsSync(pagesJsonPath)) {
+            try {
+                pages = JSON.parse(fs.readFileSync(pagesJsonPath, 'utf8'));
+            } catch (e) {
+                console.warn('[CONFIG] Không thể đọc file pages.json:', e.message);
+            }
+        }
+    }
+
+    const defaultPageId = process.env.FB_PAGE_ID || loaded.FB_PAGE_ID || '';
+    const defaultPageToken = process.env.FB_PAGE_ACCESS_TOKEN || loaded.FB_PAGE_ACCESS_TOKEN || '';
+
+    // Nếu pages chưa có danh sách thì nạp page mặc định từ FB_PAGE_ID
+    if (!Array.isArray(pages) || pages.length === 0) {
+        if (defaultPageId && defaultPageToken) {
+            pages = [{
+                id: defaultPageId,
+                name: 'Góc của mẹ',
+                token: defaultPageToken,
+                persona: 'mom_and_baby',
+                knowledgeFile: path.join(__dirname, 'knowledge.md')
+            }];
+        }
+    }
+
     return {
-        // Cấu hình Facebook Page
-        pageId: process.env.FB_PAGE_ID || loaded.FB_PAGE_ID || '',
-        pageToken: process.env.FB_PAGE_ACCESS_TOKEN || loaded.FB_PAGE_ACCESS_TOKEN || '',
+        // Danh sách Đa Page
+        pages: pages,
+        defaultPageId: defaultPageId,
+        defaultPageToken: defaultPageToken,
         
         // Cấu hình AI Gemini
         geminiApiKey: process.env.GEMINI_API_KEY || loaded.GEMINI_API_KEY || '',
         geminiModel: loaded.GEMINI_MODEL || 'gemini-1.5-flash',
 
         // CẤU HÌNH ĐỘ TRỄ MÔ PHỎNG NGƯỜI THẬT (CHỐNG KHÓA / CHỐNG SPAM)
-        // Độ trễ ngẫu nhiên trước khi gửi câu trả lời (giây)
         delayMinSeconds: parseInt(loaded.DELAY_MIN_SECONDS || '35', 10),
-        delayMaxSeconds: parseInt(loaded.DELAY_MAX_SECONDS || '95', 10),
-
-        // Khoảng cách giãn cách giữa các comment khi có nhiều khách comment cùng lúc (giây)
+        delayMaxSeconds: parseInt(loaded.DELAY_MAX_SECONDS || '90', 10),
         spacingBetweenComments: parseInt(loaded.SPACING_BETWEEN_COMMENTS || '25', 10),
-
-        // Chu kỳ quét bài viết mới (giây)
         scanIntervalSeconds: parseInt(loaded.SCAN_INTERVAL_SECONDS || '60', 10),
-
-        // Số bài viết gần nhất cần quét
         postLimit: parseInt(loaded.POST_LIMIT || '5', 10),
-
-        // Giới hạn số lượng phản hồi an toàn mỗi giờ (tránh bị cờ spam)
         maxRepliesPerHour: parseInt(loaded.MAX_REPLIES_PER_HOUR || '30', 10),
-
-        // Tự động ẩn comment nếu chứa số điện thoại (chống cướp đơn)
         autoHidePhone: loaded.AUTO_HIDE_PHONE !== 'false',
-
-        // Gửi tin nhắn riêng (Private Reply) qua Messenger nếu được phép
         enablePrivateReply: loaded.ENABLE_PRIVATE_REPLY === 'true',
 
         // File lưu lịch sử đã reply
         historyFile: path.join(__dirname, 'replied_comments.json'),
-
-        // File kiến thức sản phẩm
         knowledgeFile: path.join(__dirname, 'knowledge.md')
     };
 }
