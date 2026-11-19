@@ -1,0 +1,21 @@
+{
+  "name": "facebook-comment-bot",
+  "version": "1.0.0",
+  "description": "Facebook AI Auto-Reply Comment Bot with Anti-Ban and Hypnotic Sales Skills",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "test": "node test_ai_simulation.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "facebook",
+    "bot",
+    "ai",
+    "auto-reply"
+  ],
+  "author": "",
+  "license": "ISC"
+}

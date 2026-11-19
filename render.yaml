@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: facebook-comment-bot
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node bot.js
+    envVars:
+      - key: FB_PAGE_ID
+        sync: false
+      - key: FB_PAGE_ACCESS_TOKEN
+        sync: false
+      - key: DELAY_MIN_SECONDS
+        value: 35
+      - key: DELAY_MAX_SECONDS
+        value: 90
+      - key: AUTO_HIDE_PHONE
+        value: true
+      - key: ENABLE_PRIVATE_REPLY
+        value: true
