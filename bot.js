@@ -80,24 +80,7 @@ class FacebookCommentBot {
         console.log('   🤖 FACEBOOK AI COMMENT BOT - ANTI-BAN PRO        ');
         console.log('=====================================================');
 
-        try {
-            const page = await this.fb.checkPage();
-            console.log(`[PAGE KẾT NỐI THÀNH CÔNG] 👉 ${page.name} (ID: ${page.id})`);
-        } catch (err) {
-            console.error(`[LỖI KẾT NỐI PAGE] ❌ ${err.message}`);
-            console.log('Vui lòng kiểm tra lại FB_PAGE_ACCESS_TOKEN và FB_PAGE_ID trong cấu hình!');
-            return;
-        }
-
-        console.log(`[CẤU HÌNH ĐỘ TRỄ MÔ PHỎNG NGƯỜI THẬT]`);
-        console.log(`  - Độ trễ phản hồi ngẫu nhiên: ${this.config.delayMinSeconds}s - ${this.config.delayMaxSeconds}s`);
-        console.log(`  - Giãn cách giữa các comment: ${this.config.spacingBetweenComments}s`);
-        console.log(`  - Chu kỳ quét bài viết: mỗi ${this.config.scanIntervalSeconds}s`);
-        console.log(`  - Tự động ẩn số điện thoại: ${this.config.autoHidePhone ? 'BẬT ✅' : 'TẮT ❌'}`);
-        console.log(`  - Trí tuệ nhân tạo (AI): ${this.config.geminiApiKey ? 'Gemini AI ✅' : 'Rule-based đa dạng (Chống lặp) ⚡'}`);
-        console.log('-----------------------------------------------------\n');
-
-        // Bật HTTP Server nhẹ để chạy được trên mọi nền tảng Cloud (Render, Railway, Koyeb...)
+        // 1. Luôn bật HTTP Server trước để Cloud Container (Render/Railway) không bị thoát
         const PORT = process.env.PORT || 3000;
         try {
             const server = http.createServer((req, res) => {
@@ -110,12 +93,29 @@ class FacebookCommentBot {
                     lastCheck: new Date().toISOString()
                 }));
             });
-            server.listen(PORT, () => {
-                console.log(`[CLOUD HOSTING] Cổng Web trực tuyến 24/7: port ${PORT}`);
+            server.listen(PORT, '0.0.0.0', () => {
+                console.log(`[CLOUD HOSTING] Cổng Web trực tuyến 24/7: http://0.0.0.0:${PORT}`);
             });
         } catch (e) {
-            // Không chặn bot nếu cổng bị bận khi chạy local
+            console.warn('[SERVER PORT WARN]', e.message);
         }
+
+        // 2. Kiểm tra kết nối Page
+        try {
+            const page = await this.fb.checkPage();
+            console.log(`[PAGE KẾT NỐI THÀNH CÔNG] 👉 ${page.name} (ID: ${page.id})`);
+        } catch (err) {
+            console.error(`[LỖI KẾT NỐI PAGE] ❌ ${err.message}`);
+            console.log('Bot sẽ tiếp tục chạy nền và thử kết nối lại theo chu kỳ...');
+        }
+
+        console.log(`[CẤU HÌNH ĐỘ TRỄ MÔ PHỎNG NGƯỜI THẬT]`);
+        console.log(`  - Độ trễ phản hồi ngẫu nhiên: ${this.config.delayMinSeconds}s - ${this.config.delayMaxSeconds}s`);
+        console.log(`  - Giãn cách giữa các comment: ${this.config.spacingBetweenComments}s`);
+        console.log(`  - Chu kỳ quét bài viết: mỗi ${this.config.scanIntervalSeconds}s`);
+        console.log(`  - Tự động ẩn số điện thoại: ${this.config.autoHidePhone ? 'BẬT ✅' : 'TẮT ❌'}`);
+        console.log(`  - Trí tuệ nhân tạo (AI): ${this.config.geminiApiKey ? 'Gemini AI ✅' : 'Rule-based đa dạng (Chống lặp) ⚡'}`);
+        console.log('-----------------------------------------------------\n');
 
         this.isRunning = true;
 
