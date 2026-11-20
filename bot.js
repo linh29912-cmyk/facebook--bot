@@ -212,7 +212,7 @@ class FacebookCommentBot {
     }
 
     async handleNewComment(comment, post, page) {
-        const customerName = comment.from?.name || 'Khách hàng';
+        const customerName = comment.from?.name || '';
         const commentText = comment.message || '';
         console.log(`\n-----------------------------------------------------`);
         console.log(`💬 [Page: ${page.name}] COMMENT MỚI TỪ: ${customerName}`);
