@@ -1,5 +1,6 @@
 const fs = require('fs');
 const http = require('http');
+const url = require('url');
 const loadConfig = require('./config');
 const FacebookAPI = require('./lib/facebook');
 const AIAnswerGenerator = require('./lib/ai');
@@ -19,6 +20,7 @@ class FacebookCommentBot {
         this.config = loadConfig();
         this.ai = new AIAnswerGenerator(this.config);
         this.repliedHistory = this.loadHistory();
+        this.repliedMessages = this.loadMessageHistory();
         this.currentHour = new Date().getHours();
         this.isRunning = false;
 
@@ -27,6 +29,7 @@ class FacebookCommentBot {
             ...p,
             fb: new FacebookAPI(p.id, p.token),
             replyCountInCurrentHour: 0,
+            msgReplyCountInCurrentHour: 0,
             connected: false
         }));
     }
@@ -38,7 +41,20 @@ class FacebookCommentBot {
                 return Array.isArray(data) ? new Set(data) : new Set(Object.keys(data));
             }
         } catch (e) {
-            console.warn('[HISTORY] Tạo mới file lưu lịch sử phản hồi...');
+            console.warn('[HISTORY] Tạo mới file lưu lịch sử comment...');
+        }
+        return new Set();
+    }
+
+    loadMessageHistory() {
+        try {
+            const file = this.config.messengerHistoryFile || 'replied_messages.json';
+            if (fs.existsSync(file)) {
+                const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+                return Array.isArray(data) ? new Set(data) : new Set(Object.keys(data));
+            }
+        } catch (e) {
+            console.warn('[HISTORY] Tạo mới file lưu lịch sử tin nhắn...');
         }
         return new Set();
     }
@@ -67,15 +83,43 @@ class FacebookCommentBot {
         }
     }
 
+    saveMessengerHistory(messageId, info = {}) {
+        this.repliedMessages.add(messageId);
+        try {
+            const file = this.config.messengerHistoryFile || 'replied_messages.json';
+            let existingData = {};
+            if (fs.existsSync(file)) {
+                try {
+                    existingData = JSON.parse(fs.readFileSync(file, 'utf8'));
+                    if (Array.isArray(existingData)) {
+                        existingData = Object.fromEntries(existingData.map(id => [id, { time: new Date().toISOString() }]));
+                    }
+                } catch (e) {
+                    existingData = {};
+                }
+            }
+            existingData[messageId] = {
+                time: new Date().toISOString(),
+                ...info
+            };
+            fs.writeFileSync(file, JSON.stringify(existingData, null, 2), 'utf8');
+        } catch (err) {
+            console.error('[MSG HISTORY ERROR]', err.message);
+        }
+    }
+
     checkHourlyLimit(page) {
         const nowHour = new Date().getHours();
         if (nowHour !== this.currentHour) {
             this.currentHour = nowHour;
-            this.pages.forEach(p => p.replyCountInCurrentHour = 0);
+            this.pages.forEach(p => {
+                p.replyCountInCurrentHour = 0;
+                p.msgReplyCountInCurrentHour = 0;
+            });
         }
 
         if (page.replyCountInCurrentHour >= this.config.maxRepliesPerHour) {
-            console.log(`[RATE LIMIT 🛡️] Page "${page.name}" đạt giới hạn ${this.config.maxRepliesPerHour} phản hồi/giờ. Tạm nghỉ tới giờ sau...`);
+            console.log(`[RATE LIMIT 🛡️] Page "${page.name}" đạt giới hạn ${this.config.maxRepliesPerHour} bình luận/giờ.`);
             return false;
         }
         return true;
@@ -83,33 +127,82 @@ class FacebookCommentBot {
 
     async start() {
         console.log('=====================================================');
-        console.log('   🤖 FACEBOOK MULTI-PAGE AI COMMENT BOT - 24/7     ');
+        console.log('   🤖 FACEBOOK MULTI-PAGE AI COMMENT & MESSENGER BOT');
         console.log('=====================================================');
 
-        // 1. Luôn bật HTTP Server trước để Cloud Container (Render/Railway) không bị thoát
+        // 1. HTTP Server hỗ trợ cả Webhook Real-time và Giám sát Health Check
         const PORT = process.env.PORT || 3000;
         try {
             const server = http.createServer((req, res) => {
+                const parsedUrl = url.parse(req.url, true);
+
+                // --- 1.1. XÁC THỰC WEBHOOK (GET /webhook) ---
+                if (req.method === 'GET' && parsedUrl.pathname === '/webhook') {
+                    const mode = parsedUrl.query['hub.mode'];
+                    const token = parsedUrl.query['hub.verify_token'];
+                    const challenge = parsedUrl.query['hub.challenge'];
+
+                    if (mode === 'subscribe' && token === this.config.webhookVerifyToken) {
+                        console.log('[WEBHOOK] ✅ Xác thực Webhook Meta thành công!');
+                        res.writeHead(200, { 'Content-Type': 'text/plain' });
+                        res.end(challenge);
+                        return;
+                    } else {
+                        console.warn('[WEBHOOK] ❌ Xác thực thất bại, token không khớp');
+                        res.writeHead(403);
+                        res.end('Forbidden');
+                        return;
+                    }
+                }
+
+                // --- 1.2. NHẬN SỰ KIỆN TỨC THÌ (POST /webhook) ---
+                if (req.method === 'POST' && parsedUrl.pathname === '/webhook') {
+                    let body = '';
+                    req.on('data', chunk => { body += chunk.toString(); });
+                    req.on('end', async () => {
+                        try {
+                            const data = JSON.parse(body);
+                            if (data.object === 'page') {
+                                this.handleWebhookEvent(data);
+                            }
+                            res.writeHead(200, { 'Content-Type': 'application/json' });
+                            res.end(JSON.stringify({ status: 'EVENT_RECEIVED' }));
+                        } catch (err) {
+                            res.writeHead(400);
+                            res.end('Invalid Payload');
+                        }
+                    });
+                    return;
+                }
+
+                // --- 1.3. DASHBOARD TRẠNG THÁI HỆ THỐNG (GET /) ---
                 res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
                 res.end(JSON.stringify({
                     status: "ONLINE",
-                    bot: "Facebook Multi-Page AI Comment Bot",
+                    bot: "Facebook Multi-Page AI Comment & Messenger Bot",
+                    features: {
+                        autoCommentReply: true,
+                        autoMessengerReply: this.config.enableMessengerBot !== false,
+                        webhookEnabled: true
+                    },
                     totalPages: this.pages.length,
                     pages: this.pages.map(p => ({
                         id: p.id,
                         name: p.name,
                         status: p.connected ? "CONNECTED" : "WAITING_AUTH",
-                        repliesThisHour: p.replyCountInCurrentHour
+                        commentRepliesThisHour: p.replyCountInCurrentHour,
+                        messageRepliesThisHour: p.msgReplyCountInCurrentHour
                     })),
                     uptimeSeconds: Math.floor(process.uptime()),
                     lastCheck: new Date().toISOString()
                 }));
             });
+
             server.listen(PORT, '0.0.0.0', () => {
                 console.log(`[CLOUD HOSTING] Cổng Web trực tuyến 24/7: http://0.0.0.0:${PORT}`);
             });
 
-            // Tự động ping chính mình mỗi 5 phút để Cloud Container (Render) không bị rơi vào trạng thái ngủ (spin down)
+            // Tự động ping chính mình mỗi 5 phút để Render không bị rơi vào trạng thái ngủ (spin down)
             setInterval(async () => {
                 try {
                     await fetch('https://goc-cua-me-bot.onrender.com');
@@ -132,9 +225,9 @@ class FacebookCommentBot {
             }
         }
 
-        console.log(`\n[CẤU HÌNH ĐỘ TRỄ MÔ PHỎNG NGƯỜI THẬT]`);
-        console.log(`  - Độ trễ phản hồi ngẫu nhiên: ${this.config.delayMinSeconds}s - ${this.config.delayMaxSeconds}s`);
-        console.log(`  - Giãn cách giữa các comment: ${this.config.spacingBetweenComments}s`);
+        console.log(`\n[CẤU HÌNH HỆ THỐNG]`);
+        console.log(`  - Tự động trả lời Messenger: ${this.config.enableMessengerBot ? 'BẬT ✅' : 'TẮT ❌'}`);
+        console.log(`  - Độ trễ phản hồi bình luận: ${this.config.delayMinSeconds}s - ${this.config.delayMaxSeconds}s`);
         console.log(`  - Chu kỳ quét: mỗi ${this.config.scanIntervalSeconds}s`);
         console.log(`  - Tự động ẩn số điện thoại: ${this.config.autoHidePhone ? 'BẬT ✅' : 'TẮT ❌'}`);
         console.log('-----------------------------------------------------\n');
@@ -153,42 +246,153 @@ class FacebookCommentBot {
         }
     }
 
-    async scanAndProcessAllPages() {
-        const timeNow = new Date().toLocaleTimeString('vi-VN');
-        console.log(`[${timeNow}] 🔍 Bắt đầu chu kỳ quét ${this.pages.length} Fanpage...`);
+    /**
+     * Xử lý sự kiện tức thì khi Facebook bắn Webhook
+     */
+    async handleWebhookEvent(data) {
+        for (const entry of data.entry || []) {
+            const pageId = entry.id;
+            const page = this.pages.find(p => p.id === pageId);
+            if (!page) continue;
 
-        for (const page of this.pages) {
-            if (!this.checkHourlyLimit(page)) continue;
-            try {
-                await this.scanSinglePage(page);
-            } catch (err) {
-                console.error(`[PAGE SCAN ERROR] Page "${page.name}": ${err.message}`);
+            for (const messagingItem of entry.messaging || []) {
+                const senderId = messagingItem.sender?.id;
+                const message = messagingItem.message;
+
+                // Bỏ qua tin nhắn do chính page gửi hoặc echo
+                if (!message || message.is_echo || senderId === page.id) continue;
+                if (this.repliedMessages.has(message.mid)) continue;
+
+                console.log(`⚡ [WEBHOOK MESSENGER] Tin nhắn mới từ PSID ${senderId} trên [${page.name}]: "${message.text}"`);
+
+                const replyText = await this.ai.generateMessengerResponse(message.text || '', '', page);
+                try {
+                    await page.fb.sendMessengerReply(null, senderId, replyText);
+                    console.log(`   ✅ [WEBHOOK] Đã phản hồi tin nhắn thành công!`);
+                    this.saveMessengerHistory(message.mid, {
+                        page: page.name,
+                        senderId: senderId,
+                        text: message.text,
+                        reply: replyText,
+                        source: 'webhook'
+                    });
+                    page.msgReplyCountInCurrentHour++;
+                } catch (err) {
+                    console.error(`   ❌ [WEBHOOK ERROR] ${err.message}`);
+                }
             }
         }
     }
 
-    async scanSinglePage(page) {
-        console.log(`\n👉 Đang quét Page: [${page.name}] (ID: ${page.id})`);
+    async scanAndProcessAllPages() {
+        const timeNow = new Date().toLocaleTimeString('vi-VN');
+        console.log(`[${timeNow}] 🔍 Bắt đầu chu kỳ quét ${this.pages.length} Fanpage (Bình luận & Hộp thư Messenger)...`);
 
+        for (const page of this.pages) {
+            // 1. Quét bình luận bài viết & Reels
+            if (this.checkHourlyLimit(page)) {
+                try {
+                    await this.scanCommentsForPage(page);
+                } catch (err) {
+                    console.error(`[PAGE COMMENT ERROR] Page "${page.name}": ${err.message}`);
+                }
+            }
+
+            // 2. Quét hộp thư Messenger (Tự động trả lời tin nhắn khách nhắn vào page)
+            if (this.config.enableMessengerBot) {
+                try {
+                    await this.scanMessengerForPage(page);
+                } catch (err) {
+                    console.error(`[PAGE MESSENGER ERROR] Page "${page.name}": ${err.message}`);
+                }
+            }
+        }
+    }
+
+    /**
+     * Quét và tự động trả lời tin nhắn hộp thư Messenger của Page
+     */
+    async scanMessengerForPage(page) {
+        let conversations = [];
+        try {
+            conversations = await page.fb.getConversations(8);
+        } catch (err) {
+            // Không ngắt luồng chính nếu lỗi mạng tạm thời
+            return;
+        }
+
+        for (const convo of conversations) {
+            const latestMsg = convo.messages?.data?.[0];
+            if (!latestMsg) continue;
+
+            // 1. Kiểm tra nếu tin nhắn mới nhất do chính Page gửi -> Đã trả lời xong
+            if (latestMsg.from?.id === page.id) continue;
+
+            // 2. Kiểm tra nếu tin nhắn này đã được bot xử lý trước đó -> Bỏ qua
+            if (this.repliedMessages.has(latestMsg.id)) continue;
+
+            // 3. Khách hàng là người gửi tin nhắn mới nhất!
+            const customer = convo.senders?.data?.find(s => s.id !== page.id) || latestMsg.from;
+            const customerName = customer?.name || latestMsg.from?.name || '';
+            const customerPsid = customer?.id || latestMsg.from?.id;
+            const messageText = latestMsg.message || '';
+
+            console.log(`\n📬 [MESSENGER INBOX] TIN NHẮN MỚI TẠI [${page.name}]:`);
+            console.log(`   Khách hàng: ${customerName} (ID: ${customerPsid})`);
+            console.log(`   Nội dung: "${messageText}"`);
+
+            // 4. Sinh câu trả lời Messenger bằng AI chuẩn ngôn từ thôi miên & 9C
+            console.log(`   🧠 AI đang soạn câu trả lời Messenger chu đáo...`);
+            const replyText = await this.ai.generateMessengerResponse(messageText, customerName, page);
+            console.log(`   💡 Nội dung tin nhắn: "${replyText}"`);
+
+            // Mô phỏng độ trễ người thật gõ tin nhắn (khoảng 8 - 15 giây)
+            const typingDelay = getRandomDelay(8, 15);
+            console.log(`   ⏳ Đang chờ ${typingDelay}s mô phỏng thao tác nhân viên tư vấn trả lời...`);
+            await sleep(typingDelay * 1000);
+
+            // 5. Gửi tin nhắn trả lời
+            try {
+                await page.fb.sendMessengerReply(convo.id, customerPsid, replyText);
+                console.log(`   ✅ ĐÃ TRẢ LỜI TIN NHẮN MESSENGER THÀNH CÔNG!`);
+
+                this.saveMessengerHistory(latestMsg.id, {
+                    page: page.name,
+                    convoId: convo.id,
+                    customer: customerName,
+                    customerPsid: customerPsid,
+                    text: messageText,
+                    reply: replyText,
+                    source: 'polling'
+                });
+                page.msgReplyCountInCurrentHour++;
+            } catch (err) {
+                console.error(`   ❌ LỖI GỬI MESSENGER: ${err.message}`);
+            }
+
+            // Giãn cách ngắn giữa các hội thoại
+            await sleep(5000);
+        }
+    }
+
+    /**
+     * Quét và trả lời bình luận trên bài viết & Reels
+     */
+    async scanCommentsForPage(page) {
         let posts = [];
         try {
             posts = await page.fb.getPublishedPosts(this.config.postLimit);
         } catch (err) {
-            console.warn(`  ⚠️ [POSTS] Không lấy được bài viết của page "${page.name}": ${err.message}`);
             return;
         }
 
-        if (posts.length === 0) {
-            console.log('  -> Chưa có bài viết nào gần đây.');
-            return;
-        }
+        if (posts.length === 0) return;
 
         for (const post of posts) {
             let comments = [];
             try {
                 comments = await page.fb.getPostComments(post.id);
             } catch (err) {
-                console.warn(`    ⚠️ Không thể đọc comment của bài ${post.id}: ${err.message}`);
                 continue;
             }
 

@@ -82,6 +82,12 @@ function loadEnv() {
         autoHidePhone: loaded.AUTO_HIDE_PHONE !== 'false',
         enablePrivateReply: loaded.ENABLE_PRIVATE_REPLY === 'true',
 
+        // CẤU HÌNH MESSENGER BOT TỰ ĐỘNG TRẢ LỜI TIN NHẮN
+        enableMessengerBot: loaded.ENABLE_MESSENGER_BOT !== 'false',
+        messengerScanIntervalSeconds: parseInt(loaded.MESSENGER_SCAN_INTERVAL_SECONDS || '45', 10),
+        webhookVerifyToken: process.env.WEBHOOK_VERIFY_TOKEN || loaded.WEBHOOK_VERIFY_TOKEN || 'goc_cua_me_secret_token_2026',
+        messengerHistoryFile: path.join(__dirname, 'replied_messages.json'),
+
         // File lưu lịch sử đã reply
         historyFile: path.join(__dirname, 'replied_comments.json'),
         knowledgeFile: path.join(__dirname, 'knowledge.md')
