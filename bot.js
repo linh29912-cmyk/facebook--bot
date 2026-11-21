@@ -108,6 +108,13 @@ class FacebookCommentBot {
             server.listen(PORT, '0.0.0.0', () => {
                 console.log(`[CLOUD HOSTING] Cổng Web trực tuyến 24/7: http://0.0.0.0:${PORT}`);
             });
+
+            // Tự động ping chính mình mỗi 5 phút để Cloud Container (Render) không bị rơi vào trạng thái ngủ (spin down)
+            setInterval(async () => {
+                try {
+                    await fetch('https://goc-cua-me-bot.onrender.com');
+                } catch (e) {}
+            }, 5 * 60 * 1000);
         } catch (e) {
             console.warn('[SERVER PORT WARN]', e.message);
         }
